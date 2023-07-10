@@ -1,0 +1,368 @@
+.org $C000
+ 
+XAML  = $24                            
+XAMH  = $25                            
+STL   = $26                           
+STH   = $27                            
+L     = $28                           
+H     = $29                          
+YSAV  = $2A                    
+MODE  = $2B                            
+
+IN    = $0200                     
+
+;address for different peripherals
+
+;A200: UART
+ACIA_DATA   = $A200
+ACIA_STATUS = $A201
+ACIA_CMD    = $A202
+ACIA_CTRL   = $A203
+
+;A400 - A40F: I/O Timer 1 (left)
+;Port B for A VIA is for keyboard
+IO1B = $A400
+IO1A = $A401
+IO1DB = $A402
+IO1DA = $A403
+IO1PCR = $A40C
+IO1IFR = $A40D
+IO1IER = $A40E
+
+;A800 - A80F: I/O Timer 2 (right)
+IO2B = $A800
+IO2A = $A801
+IO2DB = $A802
+IO2DA = $A803
+IO2PCR = $A80C
+IO2IFR = $A80D
+IO2IER = $A80E
+
+kb_wptr = $0000
+kb_rptr = $0001
+kb_flags = $0002
+
+RELEASE = %00000001
+SHIFT   = %00000010
+
+kb_buffer = $0300  ; 256-byte kb buffer 0300-03ff
+
+E  = %01000000
+RW = %00100000
+RS = %00010000
+
+;keyboard instruction
+
+; IRQ vector points here
+keyboard_interrupt:
+  pha
+  txa
+  pha
+  lda kb_flags
+  and #RELEASE   ; check if we're releasing a key
+  beq read_key   ; otherwise, read the key
+
+  lda kb_flags
+  eor #RELEASE   ; flip the releasing bit
+  sta kb_flags
+  lda IO1DB      ; read key value that's being released
+  cmp #$12       ; left shift
+  beq shift_up
+  cmp #$59       ; right shift
+  beq shift_up
+  jmp exit
+
+shift_up:
+  lda kb_flags
+  eor #SHIFT  ; flip the shift bit
+  sta kb_flags
+  jmp exit
+
+read_key:
+  lda IO1DB
+  JSR     ECHO 
+  cmp #$f0        ; if releasing a key
+  beq key_release ; set the releasing bit
+  cmp #$12        ; left shift
+  beq shift_down
+  cmp #$59        ; right shift
+  beq shift_down
+
+  tax
+  lda kb_flags
+  and #SHIFT
+  bne shifted_key
+
+  lda keymap, x   ; map to character code
+  jmp push_key
+
+shifted_key:
+  lda keymap_shifted, x   ; map to character code
+
+push_key:
+  ldx kb_wptr
+  sta kb_buffer, x
+  inc kb_wptr
+  jmp exit
+
+shift_down:
+  lda kb_flags
+  ora #SHIFT
+  sta kb_flags
+  jmp exit
+
+key_release:
+  lda kb_flags
+  ora #RELEASE
+  sta kb_flags
+
+exit:
+  pla
+  tax
+  pla
+  rti
+
+nmi:
+  rti
+
+  .org $d000
+keymap:
+  .byte "????????????? `?" ; 00-0F
+  .byte "?????q1???zsaw2?" ; 10-1F
+  .byte "?cxde43?? vftr5?" ; 20-2F
+  .byte "?nbhgy6???mju78?" ; 30-3F
+  .byte "?,kio09??./l;p-?" ; 40-4F
+  .byte "??'?[=?????]????" ; 50-5F
+  .byte "?????????1?47???" ; 60-6F
+  .byte "0.2568",$1b,"??+3-*9??" ; 70-7F
+  .byte "????????????????" ; 80-8F
+  .byte "????????????????" ; 90-9F
+  .byte "????????????????" ; A0-AF
+  .byte "????????????????" ; B0-BF
+  .byte "????????????????" ; C0-CF
+  .byte "????????????????" ; D0-DF
+  .byte "????????????????" ; E0-EF
+  .byte "????????????????" ; F0-FF
+keymap_shifted:
+  .byte "????????????? ~?" ; 00-0F
+  .byte "?????Q!???ZSAW@?" ; 10-1F
+  .byte "?CXDE#$?? VFTR%?" ; 20-2F
+  .byte "?NBHGY^???MJU&*?" ; 30-3F
+  .byte "?<KIO)(??>?L:P_?" ; 40-4F
+  .byte "????{+?????}?|??" ; 50-5F
+  .byte "?????????1?47???" ; 60-6F
+  .byte "0.2568???+3-*9??" ; 70-7F
+  .byte "????????????????" ; 80-8F
+  .byte "????????????????" ; 90-9F
+  .byte "????????????????" ; A0-AF
+  .byte "????????????????" ; B0-BF
+  .byte "????????????????" ; C0-CF
+  .byte "????????????????" ; D0-DF
+  .byte "????????????????" ; E0-EF
+  .byte "????????????????" ; F0-FF
+  
+  .org $d05a
+  .byte $0a
+
+.org $f000
+;-------------------------------------------------------------------------
+;
+;  The modified WOZ Monitor for the Y!6502
+;  Written by Steve Wozniak 1976
+;  Modified by Ben Eater for ACIA input/output 2023
+;  Added support for BE keyboard 
+;
+;-------------------------------------------------------------------------
+
+
+
+
+RESET:
+                LDA     #$1F       
+                STA     ACIA_CTRL
+                LDA     #$0B          
+                STA     ACIA_CMD   
+                lda     #$ff ; Set all pins on port B to output
+                sta     IO1DA
+                lda     #$00 ; Set all pins on port A to input
+                sta     IO1DB
+                LDA     #$1B
+
+NOTCR:
+                CMP     #$08      
+                BEQ     BACKSPACE   
+                CMP     #$1B     
+                BEQ     ESCAPE      
+                INY                 
+                BPL     NEXTCHAR     
+ESCAPE:
+                LDA     #$5C         
+                JSR     ECHO          
+
+GETLINE:
+                LDA     #$0D         
+                JSR     ECHO
+
+                LDY     #$01           
+BACKSPACE:      DEY              
+                BMI     GETLINE   
+
+NEXTCHAR:
+                sei                     ;disable irq
+                lda     kb_rptr
+                cmp     kb_wptr
+                cli                     ;enable irq
+                bne     AFTERCHAR1      ;proceed to AFTERCHAR1 if there are new chars
+                LDA     ACIA_STATUS     ;else check ACIA
+                AND     #$08
+                BEQ     NEXTCHAR        ;if there are new chars from ACIA then proceed to AFTERCHAR2
+AFTERCHAR1:
+                ldx     kb_rptr
+                lda     kb_buffer, x
+                inc     kb_rptr         ;load Acc, increment kb_rptr then jump to NEXTCHAREND
+                jmp     NEXTCHAREND
+AFTERCHAR2:
+                LDA     ACIA_DATA       ;same as in Ben's og code
+                STA     IN,Y            ;after storing Acc in WozMon buffer, drop to NEXTCHAREND
+NEXTCHAREND:
+                JSR     ECHO            ;same code as Ben's 
+                CMP     #$0D        
+                BNE     NOTCR
+                LDY     #$FF       
+                LDA     #$00        
+                TAX   
+
+SETBLOCK:
+                ASL
+SETSTOR:
+                ASL                 
+                STA     MODE     
+BLSKIP:
+                INY              
+NEXTITEM:
+                LDA     IN,Y        
+                CMP     #$0D       
+                BEQ     GETLINE     
+                CMP     #$2E   
+                BCC     BLSKIP        
+                BEQ     SETBLOCK      
+                CMP     #$3A    
+                BEQ     SETSTOR      
+                CMP     #$52       
+                BEQ     RUN          
+                STX     L           
+                STX     H           
+                STY     YSAV           
+
+NEXTHEX:
+                LDA     IN,Y       
+                EOR     #$30     
+                CMP     #$0A       
+                BCC     DIG       
+                ADC     #$88      
+                CMP     #$FA        
+                BCC     NOTHEX       
+DIG:
+                ASL
+                ASL               
+                ASL
+                ASL
+
+                LDX     #$04          
+HEXSHIFT:
+                ASL                 
+                ROL     L             
+                ROL     H           
+                DEX                
+                BNE     HEXSHIFT    
+                INY                    
+                BNE     NEXTHEX    
+
+NOTHEX:
+                CPY     YSAV         
+                BEQ     ESCAPE       
+
+                BIT     MODE        
+                BVC     NOTSTOR     
+
+                LDA     L         
+                STA     (STL,X)      
+                INC     STL           
+                BNE     NEXTITEM    
+                INC     STH            
+TONEXTITEM:     JMP     NEXTITEM       
+
+RUN:
+                JMP     (XAML)        
+
+NOTSTOR:
+                BMI     XAMNEXT        
+
+                LDX     #$02         
+SETADR:         LDA     L-1,X        
+                STA     STL-1,X       
+                STA     XAML-1,X   
+                DEX                   
+                BNE     SETADR        
+
+NXTPRNT:
+                BNE     PRDATA       
+                LDA     #$0D          
+                JSR     ECHO        
+                LDA     XAMH         
+                JSR     PRBYTE        
+                LDA     XAML        
+                JSR     PRBYTE     
+                LDA     #$3A       
+                JSR     ECHO       
+
+PRDATA:
+                LDA     #$20        
+                JSR     ECHO           
+                LDA     (XAML,X)    
+                JSR     PRBYTE        
+XAMNEXT:        STX     MODE     
+                LDA     XAML
+                CMP     L           
+                LDA     XAMH
+                SBC     H
+                BCS     TONEXTITEM 
+
+                INC     XAML
+                BNE     MOD8CHK       
+                INC     XAMH
+
+MOD8CHK:
+                LDA     XAML      
+                AND     #$07      
+                BPL     NXTPRNT     
+
+PRBYTE:
+                PHA               
+                LSR
+                LSR
+                LSR               
+                LSR
+                JSR     PRHEX      
+                PLA              
+
+PRHEX:
+                AND     #$0F        
+                ORA     #$30         
+                CMP     #$3A        
+                BCC     ECHO         
+                ADC     #$06        
+
+ECHO:
+                PHA                  
+                STA     ACIA_DATA    
+                LDA     #$FF        
+TXDELAY:        DEC                    
+                BNE     TXDELAY       
+                PLA             
+                RTS               
+
+.org $FFFA
+                .word   nmi        
+                .word   RESET       
+                .word   keyboard_interrupt      
